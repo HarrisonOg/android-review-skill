@@ -23,12 +23,13 @@ When invoked, the skill gathers changed Kotlin files (via branch diff, staged ch
 | Lifecycle | Fragment observation, back handling, navigation timing |
 | Threading | Main-thread IO, SharedPreferences, bitmap decoding |
 | Testing | Testability, coroutine test patterns, implementation coupling |
+| Gradle | Compose compiler/BOM mismatches, dependency scoping, ProGuard/R8, AGP/SDK levels |
 
 ## Reference guides
 
 The skill ships with two reference documents that are loaded during review:
 
-- **`references/compose-stability-guide.md`** -- Deep reference on Compose compiler stability inference, common recomposition bugs, `remember` vs `rememberSaveable` decision trees, and how to read compiler metrics output. Loaded automatically for any Compose-category review.
+- **`references/compose-stability-guide.md`** -- Deep reference on Compose compiler stability inference, common recomposition bugs, `remember` vs `rememberSaveable` decision trees, and how to read compiler metrics output. Loaded when Compose code is detected in the diff or `-focus compose` is set.
 - **`references/mozilla-firefox-patterns.md`** -- Firefox for Android (Fenix) project-specific patterns including the Mozilla `Store`/`Action`/`Reducer`/`Middleware` state management pattern, Proto DataStore migration rules, Compose interop boundary rules, Hilt scoping conventions, and testing standards (JUnit 4 + MockK). Loaded when the `-firefox` flag is passed.
 
 ## The gather script
@@ -69,8 +70,17 @@ Additional flags: `--no-ktlint`, `--depth quick|full`, `--focus CATEGORY`.
 # Firefox-specific review with Mozilla patterns
 /android-review -branch fenix-feature main -firefox
 
+# Review staged changes before committing
+/android-review -staged
+
+# Review unstaged working tree changes
+/android-review -unstaged
+
 # Pass context to the reviewer
 /android-review -branch feature/sync main -message "pay attention to coroutine scoping"
+
+# Suppress the save prompt
+/android-review -branch feature/auth main -no-save
 
 # Combine flags
 /android-review -branch release/3.0 main -depth quick -firefox -message "block on anything crash-worthy"

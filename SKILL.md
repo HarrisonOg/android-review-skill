@@ -1,6 +1,6 @@
 ---
 name: android-review
-description: Staff-level Android code review for Kotlin, Jetpack Compose, coroutines/Flow, memory leaks, architecture, and production-scale pitfalls. Use when asked to "review this Android code", "do a code review", "check for leaks", "review my ViewModel", "review my branch", "check my coroutine code", "-branch", or any request to audit Android/Kotlin code quality. Accepts arguments: -branch [feature] [base], -file [path], -focus [category], -depth quick|full, -message "context".
+description: Staff-level Android code review for Kotlin, Jetpack Compose, coroutines/Flow, memory leaks, architecture, and production-scale pitfalls. Use when asked to "review this Android code", "do a code review", "check for leaks", "review my ViewModel", "review my branch", "check my coroutine code", "-branch", or any request to audit Android/Kotlin code quality. Accepts arguments: -branch [feature] [base], -file [path], -staged, -unstaged, -focus [category], -depth quick|full, -no-save, -message "context".
 ---
 
 # Android Code Review — Staff Engineer Perspective
@@ -22,25 +22,30 @@ Parse `$ARGUMENTS` before doing anything else.
 |---|---|---|
 | `-branch FEATURE BASE` | `-branch my-feature main` | Review diff between two branches |
 | `-file PATH` | `-file app/src/.../MyViewModel.kt` | Review a single file |
+| `-staged` | `-staged` | Review staged (index) changes |
+| `-unstaged` | `-unstaged` | Review unstaged working tree changes |
 | `-focus CATEGORY` | `-focus memory` | Restrict to one review category |
 | `-depth quick\|full` | `-depth quick` | `quick` = blocking issues only; `full` = complete review (default) |
 | `-firefox` | `-firefox` | Load Mozilla-specific patterns from references/ |
+| `-no-save` | `-no-save` | Suppress the "save review?" prompt after delivery |
 | `-message "TEXT"` | `-message "pay extra attention to the sync logic"` | Free-form context or instructions from the engineer |
 
 **Parsing rules:**
 - Flags can appear in any order.
 - `-branch` requires exactly two arguments after it (feature branch, then base branch).
 - `-file` requires one argument after it.
-- `-focus` accepts: `memory`, `compose`, `coroutines`, `arch`, `kotlin`, `security`, `lifecycle`, `threading`, `testing`.
+- `-focus` accepts: `memory`, `compose`, `coroutines`, `arch`, `kotlin`, `security`, `lifecycle`, `threading`, `testing`, `gradle`.
 - `-message` accepts a quoted string of any length. Treat it as authoritative context from the engineer — it can narrow focus, flag known concerns, provide background the diff doesn't show, or override default review priorities.
-- If no mode flag (`-branch` or `-file`) is given, review any Kotlin code directly in the conversation.
+- `-staged` and `-unstaged` are mode flags, mutually exclusive with `-branch` and `-file`.
+- `-no-save` suppresses the post-review save prompt. `-firefox` implies `-no-save` (Mozilla git hygiene).
+- If no mode flag (`-branch`, `-file`, `-staged`, or `-unstaged`) is given, review any Kotlin code directly in the conversation.
 - Unrecognized flags: tell the user and list valid options.
 
 ---
 
-## Step 1 — Run the Gather Script (when -branch or -file is given)
+## Step 1 — Run the Gather Script (when a mode flag is given)
 
-When `-branch` or `-file` is provided, run the gather script **before** reviewing:
+When `-branch`, `-file`, `-staged`, or `-unstaged` is provided, run the gather script **before** reviewing:
 
 ```bash
 # For -branch feature-name main:
@@ -48,7 +53,15 @@ python3 {SKILL_DIR}/scripts/gather_diff.py --branch FEATURE BASE [--depth DEPTH]
 
 # For -file path/to/File.kt:
 python3 {SKILL_DIR}/scripts/gather_diff.py --file PATH
+
+# For -staged (review index changes):
+python3 {SKILL_DIR}/scripts/gather_diff.py --staged [--depth DEPTH] [--focus FOCUS]
+
+# For -unstaged (review working tree changes):
+python3 {SKILL_DIR}/scripts/gather_diff.py --unstaged [--depth DEPTH] [--focus FOCUS]
 ```
+
+**Large diff handling:** If the manifest contains more than 15 files, do NOT review them all at full depth. Instead, produce a summary table (filename, status, line count, top concern per file) and ask the engineer which files to deep-review. This prevents context overload and keeps review quality high.
 
 The script outputs a JSON manifest. Parse it:
 
@@ -100,6 +113,8 @@ For each file, also understand before flagging:
 - What **thread** does it run on?
 - Is this the **happy path** or an error/edge-case handler?
 - Is this project **Firefox for Android**? If yes, or if `-firefox` flag is set, load `references/mozilla-firefox-patterns.md` and apply Mozilla-specific checks.
+
+**Version detection:** This skill assumes minimum library versions: Compose BOM 2024.01+, lifecycle-runtime-compose 2.6+ (`collectAsStateWithLifecycle`), kotlinx-coroutines 1.7+, Hilt 2.48+, Room 2.6+. Before reviewing, check the project's `libs.versions.toml` or `build.gradle.kts` for actual dependency versions. If any are below these assumed minimums, note it at the top of the review and adjust your recommendations to match the APIs actually available in the project — don't suggest APIs that require a higher version than the project uses.
 
 ---
 
@@ -178,7 +193,7 @@ Run all applicable categories unless `-focus` restricts to one.
 
 ### COMPOSE — Jetpack Compose
 
-Load `references/compose-stability-guide.md` for deep reference during this category.
+Load `references/compose-stability-guide.md` when this category is active — either because `-focus compose` is set, or because the gathered files contain Compose code (imports from `androidx.compose.*`, `@Composable` annotations). Do not load it for non-Compose reviews.
 
 **Recomposition:**
 - `List<T>` (or `Map`, `Set`) as composable parameter — causes excess recomposition — 🟡
@@ -276,6 +291,32 @@ Load `references/compose-stability-guide.md` for deep reference during this cate
 
 ---
 
+### GRADLE — Build Configuration
+
+**Only run this category when:** Gradle files (`.gradle.kts`, `.gradle`, `libs.versions.toml`) are among the changed files in the diff, OR the user explicitly requests a full app review, OR `-focus gradle` is set.
+
+**Compose compiler / BOM mismatch:**
+- Compose compiler version incompatible with the Kotlin version used — 🔴 (build will fail or produce runtime crashes)
+- Compose BOM version and individual `androidx.compose.*` versions both specified — 🟡 (BOM should control versions; manual overrides cause conflicts)
+
+**Dependency issues:**
+- `implementation` used where `api` is required (type exposed in public API but not transitively available) — 🟡
+- `api` used where `implementation` would suffice (leaks transitive dependencies unnecessarily) — 🔵
+- Test dependency using `implementation` instead of `testImplementation` / `androidTestImplementation` — 🟡
+- Duplicate dependencies at different versions across modules — 🟡
+
+**ProGuard / R8:**
+- ProGuard rules stripping classes annotated with `@Keep`, Hilt components, or Retrofit interfaces — 🔴
+- Missing `-keepattributes` for reflection-dependent libraries (Gson, Moshi without codegen) — 🟡
+- No consumer ProGuard rules in a library module — 🔵
+
+**AGP / SDK:**
+- `minSdk` raised without migration notes or changelog entry — 🟡
+- `targetSdk` below current Google Play requirement — 🟡
+- Deprecated AGP APIs still in use — 🔵
+
+---
+
 ## Step 6 — Deliver the Review
 
 ### Full report format (default)
@@ -315,7 +356,7 @@ Load `references/compose-stability-guide.md` for deep reference during this cate
 ---
 
 ## ✅ Strengths
-[Only if something is genuinely well-done — 1–3 lines. Never invented.]
+[Only if something is genuinely well-done — 1–3 lines. Omit if nothing stands out.]
 
 ---
 _Review generated by android-review skill_
@@ -344,7 +385,7 @@ Ask for full review for details and fixes.
 
 ### Saving a Markdown report
 
-After delivering a review, always offer (unless `-firefox` argument flag is given):
+After delivering a review, always offer (unless `-no-save` or `-firefox` is set):
 > *"Want me to save this as `reviews/YYYY-MM-DD-[branch].md`?"*
 
 When writing:
@@ -378,6 +419,15 @@ When writing:
 
 # Narrow scope via message
 /android-review -file app/src/main/java/com/example/SettingsViewModel.kt -message "ignore the UI bindings, I only care about whether the DataStore writes are safe"
+
+# Review staged changes before committing
+/android-review -staged
+
+# Review unstaged working tree changes
+/android-review -unstaged
+
+# Suppress the save prompt
+/android-review -branch feature/auth main -no-save
 
 # Combine flags freely
 /android-review -branch release/3.0 main -depth quick -firefox -message "this is our RC branch, block on anything crash-worthy"
