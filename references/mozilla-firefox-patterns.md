@@ -64,9 +64,6 @@ Firefox is migrating from `SharedPreferences` to `Proto DataStore`. Flag any cod
 ### Correct usage
 
 ```kotlin
-// Injected via Hilt — never instantiate DataStore directly in a class body
-@Inject lateinit var dataStore: DataStore<AppSettings>
-
 // Reading — always via Flow, never blocking
 val setting: Flow<Boolean> = dataStore.data
     .catch { e -> if (e is IOException) emit(AppSettings.getDefaultInstance()) else throw e }
@@ -118,16 +115,6 @@ val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 val uiState by viewModel.uiState.collectAsState()
 // ^^ won't stop collecting when the app is backgrounded
 ```
-
----
-
-## Hilt Scoping in Firefox
-
-Firefox uses a multi-activity architecture. Pay attention to scope boundaries.
-
-- **`@Singleton` for anything that holds tab or session state** — 🟡 Warning. Singletons survive across browser restarts within a process; verify that's the intent.
-- **`@ActivityScoped` vs `@ActivityRetainedScoped`** — `@ActivityScoped` dies with the Activity on rotation; `@ActivityRetainedScoped` survives rotation but dies on back press. Verify the intended lifetime.
-- **`@ViewModelScoped`** — correct for anything that should live as long as the ViewModel. Prefer this over `@ActivityRetainedScoped` unless the object is needed across multiple ViewModels.
 
 ---
 
